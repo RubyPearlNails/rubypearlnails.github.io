@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Afspraak maken · Ruby Pearl</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Plan zelf je afspraak voor BIAB of hardgel bij Ruby Pearl in Den Haag.">
+<meta property="og:title" content="Afspraak maken bij Ruby Pearl">
+<meta property="og:description" content="BIAB & gel nails in Den Haag. Kies zelf je behandeling, dag en tijd.">
+<meta property="og:image" content="logo.png">
+<meta name="theme-color" content="#FAF7F5">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..600;1,6..96,400..500&family=Hanken+Grotesk:wght@400;500;600;700&family=Pinyon+Script&display=swap">
+<link rel="stylesheet" href="style.css">
+<script>
+/* Ruby Pearl – gedeelde code voor de boekingspagina en de beheerpagina. */
+(function () {
+  'use strict';
+  var C = window.RP_CONFIG || {};
+  var DEMO = !!C.DEMO;
+  var API = String(C.API_URL || '').trim();
+  // De link naar Google staat in koppeling.txt, naast deze pagina.
+  var apiKlaar = null;
+  function apiUrl() {
+    if (API) return Promise.resolve(API);
+    if (!apiKlaar) {
+      apiKlaar = fetch('koppeling.txt', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (t) { var m = /https?:\/\/[^\s'"<>]+/.exec(t); API = m ? m[0] : ''; return API; })
+        .catch(function () { return ''; });
+    }
+    return apiKlaar;
+  }
+
+  var NAMEN = {
+    nl: { dagen: ['zondag', 'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag'], kort: 2,
+          maanden: ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'], uur: 'uur' },
+    en: { dagen: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'], kort: 3,
+          maanden: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'], uur: 'hr' }
+  };
+  var TAAL = 'nl';
+  function setTaal(t) { TAAL = t === 'en' ? 'en' : 'nl'; }
+  function taal() { return TAAL; }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function naarMin(t) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(t == null ? '' : t).trim());
+    return m ? (+m[1]) * 60 + (+m[2]) : NaN;
+  }
+  function naarTijd(m) { return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
+  function utc(k) { var p = k.split('-').map(Number); return Date.UTC(p[0], p[1] - 1, p[2]); }
+  function plusDagen(k, n) { var d = new Date(utc(k) + n * 864e5); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); }
+  function dagVerschil(a, b) { return Math.round((utc(b) - utc(a)) / 864e5); }
+  function dagNr(k) { return new Date(utc(k)).getUTCDay(); }
+  function dagNaam(k) { return NAMEN[TAAL].dagen[dagNr(k)]; }
+  function dagKort(k) { return NAMEN[TAAL].dagen[dagNr(k)].slice(0, NAMEN[TAAL].kort); }
+  function dagGetal(k) { return new Date(utc(k)).getUTCDate(); }
+  function maandNaam(k) { return NAMEN[TAAL].maanden[new Date(utc(k)).getUTCMonth()]; }
+  function maandKort(k) { return maandNaam(k).slice(0, 3); }
+  function datumLang(k) { return dagNaam(k) + ' ' + dagGetal(k) + ' ' + maandNaam(k); }
+  function datumKort(k) { return dagKort(k) + ' ' + dagGetal(k) + ' ' + maandKort(k); }
+  function maandag(k) { return plusDagen(k, -((dagNr(k) + 6) % 7)); }
+  function weekNr(k) {
+    var d = new Date(utc(k)); var dag = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - dag + 3);
+    var eersteDo = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+    return 1 + Math.round(((d - eersteDo) / 864e5 - 3 + ((eersteDo.getUTCDay() + 6) % 7)) / 7);
+  }
+
+  function duurTekst(m) {
+    m = +m || 0;
+    var h = Math.floor(m / 60), r = m % 60;
+    var u = NAMEN[TAAL].uur;
+    if (h && r) return h + ' ' + u + ' ' + r + ' min';
+    if (h) return h + ' ' + u;
+    return r + ' min';
+  }
+  function prijsGetal(p) {
+    var s = String(p == null ? '' : p).replace(/€/g, '').replace(/\s/g, '').replace(',', '.');
+    return /^\d+(\.\d{1,2})?$/.test(s) ? parseFloat(s) : NaN;
+  }
+  function euro(g) { return '€' + (g % 1 ? g.toFixed(2).replace('.', ',') : String(g)); }
+  function prijsTekst(p) {
+    var s = String(p == null ? '' : p).trim();
+    if (!s) return '';
+    var g = prijsGetal(s);
+    return isNaN(g) ? s : euro(g);
+  }
+  // Zelfde regel als in de backend: alleen een totaal als alles een getal is.
+  function totaalPrijs(items) {
+    if (!items.length || !String(items[0].prijs || '').trim()) return '';
+    var som = 0;
+    for (var i = 0; i < items.length; i++) {
+      var p = String(items[i].prijs || '').trim();
+      if (!p) continue;
+      var g = prijsGetal(p);
+      if (isNaN(g)) return '';
+      som += g;
+    }
+    return euro(som);
+  }
+
+  function samenvoegen(blokken) {
+    var s = blokken.slice().sort(function (a, b) { return a[0] - b[0]; }), uit = [];
+    s.forEach(function (b) { var l = uit[uit.length - 1]; if (l && b[0] <= l[1]) l[1] = Math.max(l[1], b[1]); else uit.push([b[0], b[1]]); });
+    return uit;
+  }
+  // Zelfde rekenregel als vrijeTijden_ in Code.gs.
+  function vrijeTijden(dag, duur, r, dagIndex, nuMin) {
+    var uit = [];
+    if (!dag) return uit;
+    var stap = Math.max(5, r.stap || 30), pauze = r.pauze || 0, minV = r.minVooruit || 0;
+    dag.open.forEach(function (blok) {
+      for (var m = blok[0]; m + duur <= blok[1]; m += stap) {
+        if (dagIndex * 1440 + m - nuMin < minV) continue;
+        var botst = dag.bezet.some(function (b) { return m < b[1] + pauze && m + duur + pauze > b[0]; });
+        if (!botst && uit.indexOf(m) < 0) uit.push(m);
+      }
+    });
+    return uit.sort(function (a, b) { return a - b; });
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+  }
+  function waNummer(t) {
+    var d = String(t || '').replace(/[^\d+]/g, '');
+    if (d.indexOf('+') === 0) d = d.slice(1);
+    else if (d.indexOf('00') === 0) d = d.slice(2);
+    else if (d.indexOf('0') === 0) d = '31' + d.slice(1);
+    return d.replace(/\D/g, '');
+  }
+  function waLink(nummer, tekst) { return 'https://wa.me/' + waNummer(nummer) + (tekst ? '?text=' + encodeURIComponent(tekst) : ''); }
+  function telLink(nummer) { return 'tel:' + String(nummer || '').replace(/[^\d+]/g, ''); }
+
+  function lsGet(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+  function lsSet(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* geen opslag */ } }
+
+  function wacht(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function laadScript(src) {
+    return new Promise(function (ok, nee) {
+      var s = document.createElement('script');
+      s.src = src; s.onload = ok; s.onerror = function () { nee(new Error('Demo kon niet laden.')); };
+      document.head.appendChild(s);
+    });
+  }
+  var demoKlaar = null;
+  function laadDemo() {
+    if (!demoKlaar) demoKlaar = laadScript('demo/stubs.js').then(function () { return laadScript('demo/backend.js'); }).then(function () { return laadScript('demo/seed.js'); });
+    return demoKlaar;
+  }
+
+  function controleer(j) {
+    if (!j || !j.ok) {
+      var e = new Error((j && j.fout) || 'Er ging iets mis. Probeer het opnieuw.');
+      e.login = !!(j && j.login);
+      throw e;
+    }
+    return j;
+  }
+
+  function api(action, data) {
+    var body = Object.assign({ action: action }, data || {});
+    if (DEMO) {
+      return laadDemo().then(function () { return wacht(action === 'info' ? 350 : 450); }).then(function () {
+        return controleer(JSON.parse(window.doPost({ postData: { contents: JSON.stringify(body) } }).getContent()));
+      });
+    }
+    return apiUrl().then(function (url) {
+      if (!url) throw new Error('De website is nog niet gekoppeld aan Google. Zet je link in koppeling.txt.');
+      var verzoek = action === 'info'
+        ? fetch(url + (url.indexOf('?') < 0 ? '?' : '&') + 'action=info', { cache: 'no-store' })
+        : fetch(url, { method: 'POST', body: JSON.stringify(body) });
+      return verzoek.then(function (res) {
+        return res.json().catch(function () { throw new Error('De agenda reageert niet goed. Probeer het later opnieuw.'); });
+      }, function () {
+        throw new Error('Geen verbinding. Check je internet en probeer het opnieuw.');
+      });
+    }).then(controleer);
+  }
+
+  window.RP = {
+    DEMO: DEMO, api: api, setTaal: setTaal, taal: taal, pad: pad, naarMin: naarMin, naarTijd: naarTijd, plusDagen: plusDagen, dagVerschil: dagVerschil,
+    dagNaam: dagNaam, dagKort: dagKort, dagGetal: dagGetal, maandNaam: maandNaam, maandKort: maandKort,
+    datumLang: datumLang, datumKort: datumKort, maandag: maandag, weekNr: weekNr,
+    duurTekst: duurTekst, prijsGetal: prijsGetal, prijsTekst: prijsTekst, totaalPrijs: totaalPrijs, euro: euro,
+    samenvoegen: samenvoegen, vrijeTijden: vrijeTijden, esc: esc, waNummer: waNummer, waLink: waLink, telLink: telLink,
+    lsGet: lsGet, lsSet: lsSet
+  };
+})();
+</script>
+</head>
+<body>
+
+<div class="demo-bar" id="demo-bar" hidden>
+  <div class="in">
+    <b data-t="demo">Voorbeeld</b>
+    <span data-t="demoTekst">Dit is een demo. Er worden geen echte mails verstuurd.</span>
+    <a href="beheer.html" data-t="demoBeheer">Bekijk het beheer</a>
+  </div>
+</div>
+
+<div class="shell">
+  <aside class="intro">
+    <div class="lang" role="group" aria-label="Taal / Language">
+      <button type="button" data-lang="nl" aria-pressed="true" lang="nl">NL</button>
+      <button type="button" data-lang="en" aria-pressed="false" lang="en">EN</button>
+    </div>
+    <img class="logo" src="logo.png" alt="Ruby Pearl" width="116" height="116">
+    <h1 id="salon-naam">Ruby Pearl</h1>
+    <p class="tag" id="salon-tag">BIAB &amp; gel nails · Den Haag</p>
+    <div class="more">
+      <p class="note" id="goed" hidden><b data-t="goedOmTeWeten">Goed om te weten</b><span id="goed-tekst"></span></p>
+      <div class="contact" id="contact"></div>
+    </div>
+  </aside>
+
+  <main class="flow" id="flow">
+    <ol class="steps" id="steps">
+      <li data-s="behandeling" data-t="stap1">Behandeling</li>
+      <li data-s="moment" data-t="stap2">Dag en tijd</li>
+      <li data-s="gegevens" data-t="stap3">Gegevens</li>
+    </ol>
+
+    <section class="view" data-view="laden" aria-busy="true">
+      <div class="skeleton" style="height:34px;width:70%"></div>
+      <div class="skeleton" style="height:104px"></div>
+      <div class="skeleton" style="height:104px"></div>
+      <div class="skeleton" style="height:56px"></div>
+    </section>
+
+    <section class="view" data-view="fout" hidden>
+      <div class="empty">
+        <strong data-t="foutKop">De agenda laadt niet</strong>
+        <p id="fout-tekst">Probeer het zo nog eens.</p>
+        <button class="btn btn-sm" type="button" id="opnieuw" data-t="opnieuw">Opnieuw proberen</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="behandeling" hidden>
+      <h2 class="view-title" data-t="kop1">Wat wil je laten doen?</h2>
+      <div class="choices" id="choices" role="radiogroup"></div>
+      <h3 class="sub-title" id="extras-titel"><span data-t="extras" style="text-transform:uppercase;letter-spacing:.1em;font-weight:600">Extra's</span> <span data-t="optioneel">· optioneel</span></h3>
+      <div class="extras" id="extras"></div>
+    </section>
+
+    <section class="view" data-view="moment" hidden>
+      <h2 class="view-title" data-t="kop2">Wanneer wil je komen?</h2>
+      <p class="view-sub" id="moment-sub"></p>
+      <div id="dagen-wrap"></div>
+      <div id="tijden-wrap"></div>
+    </section>
+
+    <section class="view" data-view="gegevens" hidden>
+      <h2 class="view-title" data-t="kop3">Bijna klaar</h2>
+      <dl class="summary" id="recap"></dl>
+      <form class="form" id="boek-form" novalidate autocomplete="on">
+        <div class="field">
+          <label for="f-naam" data-t="lblNaam">Naam</label>
+          <input id="f-naam" name="name" autocomplete="name" required maxlength="80">
+        </div>
+        <div class="field">
+          <label for="f-tel" data-t="lblTel">Telefoonnummer</label>
+          <input id="f-tel" name="tel" type="tel" inputmode="tel" autocomplete="tel" placeholder="06 12345678" required maxlength="30">
+        </div>
+        <div class="field">
+          <label for="f-mail"><span data-t="lblMail">E-mail</span> <span class="hint" data-t="hintMail">voor je bevestiging</span></label>
+          <input id="f-mail" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" required maxlength="120">
+        </div>
+        <div class="field">
+          <label for="f-opm"><span data-t="lblOpm">Opmerking</span> <span class="hint" data-t="hintOpm">optioneel, bijv. kleur of inspiratie</span></label>
+          <textarea id="f-opm" name="opmerking" maxlength="500"></textarea>
+        </div>
+        <div class="hp" aria-hidden="true"><label for="f-web">Website</label><input id="f-web" name="website" tabindex="-1" autocomplete="off"></div>
+        <p class="alert alert-err" id="form-fout" role="alert" hidden></p>
+        <p class="privacy-note" data-t="privacyKort">Je gegevens gebruiken we alleen voor je afspraak.</p>
+      </form>
+    </section>
+
+    <section class="view view-done" data-view="klaar" hidden>
+      <p class="script" data-t="totSnel">Tot snel!</p>
+      <h2 class="view-title" id="klaar-titel"></h2>
+      <p id="klaar-tekst"></p>
+      <dl class="summary" id="klaar-recap"></dl>
+      <div class="actions" id="klaar-acties"></div>
+    </section>
+
+    <section class="view" data-view="annuleren" hidden>
+      <h2 class="view-title" id="ann-titel"></h2>
+      <dl class="summary" id="ann-recap"></dl>
+      <div id="ann-acties" class="form"></div>
+    </section>
+
+    <div class="dock" id="dock" hidden>
+      <div class="in">
+        <button class="back" type="button" id="terug" hidden></button>
+        <div class="sum" id="dock-sum"></div>
+        <button class="btn" type="button" id="verder"></button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <details>
+    <summary data-t="privacy">Privacy</summary>
+    <p data-t="privacyLang">We gebruiken je naam, telefoonnummer en e-mail alleen om je afspraak te regelen en je een bevestiging en herinnering te sturen. We delen ze met niemand. Wil je dat we je gegevens verwijderen? Stuur dan een berichtje.</p>
+  </details>
+  <span id="footer-naam">© Ruby Pearl</span>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var R = window.RP;
+  var $ = function (s) { return document.querySelector(s); };
+
+  /* ---------- teksten in twee talen ---------- */
+  var T = {
+    nl: {
+      titel: 'Afspraak maken', demo: 'Voorbeeld', demoTekst: 'Dit is een demo. Er worden geen echte mails verstuurd.', demoBeheer: 'Bekijk het beheer',
+      goedOmTeWeten: 'Goed om te weten', stap1: 'Behandeling', stap2: 'Dag en tijd', stap3: 'Gegevens', stappen: 'Stappen',
+      foutKop: 'De agenda laadt niet', opnieuw: 'Opnieuw proberen', kop1: 'Wat wil je laten doen?', extras: "Extra's", optioneel: '· optioneel',
+      kop2: 'Wanneer wil je komen?', kop3: 'Bijna klaar', lblNaam: 'Naam', lblTel: 'Telefoonnummer', lblMail: 'E-mail', hintMail: 'voor je bevestiging',
+      lblOpm: 'Opmerking', hintOpm: 'optioneel, bijv. kleur of inspiratie', privacyKort: 'Je gegevens gebruiken we alleen voor je afspraak.',
+      totSnel: 'Tot snel!', privacy: 'Privacy',
+      privacyLang: 'We gebruiken je naam, telefoonnummer en e-mail alleen om je afspraak te regelen en je een bevestiging en herinnering te sturen. We delen ze met niemand. Wil je dat we je gegevens verwijderen? Stuur dan een berichtje.',
+      behandelingKeuze: 'Behandeling', dagen: 'Dagen in ', terug: 'Terug',
+      geenBeh: 'Er staan nog geen behandelingen online.',
+      geenTijdenKop: 'Er zijn nu geen tijden vrij',
+      geenTijden: function (hulp) { return 'Nieuwe tijden komen er elke week bij. Kijk later nog eens, of ' + hulp + ' om te vragen wat er kan.'; },
+      stuurWa: 'Stuur een WhatsApp', stuurDm: 'Stuur een DM op Instagram', stuurWaKlein: 'stuur een WhatsApp', stuurDmKlein: 'stuur een DM op Instagram',
+      waTekst: function (wat) { return 'Hoi! Ik wil graag een afspraak maken voor ' + wat + '.'; },
+      ochtend: 'Ochtend', middag: 'Middag', avond: 'Avond',
+      rBehandeling: 'Behandeling', rWanneer: 'Wanneer', rTijd: 'Tijd', rPrijs: 'Prijs', wijzigen: 'Wijzigen',
+      fNaam: 'Vul je naam in.', fTel: 'Vul een geldig telefoonnummer in, bijvoorbeeld 06 12345678.', fMail: 'Vul een geldig e-mailadres in.',
+      bezig: 'Even geduld…', bevestig: 'Bevestig afspraak',
+      klaarTitel: function (n) { return 'Je afspraak staat, ' + n + '!'; },
+      klaarDemo: function (m) { return 'In de echte versie krijg je nu een bevestiging op ' + m + '.'; },
+      klaarMail: function (m) { return 'We hebben een bevestiging gestuurd naar ' + m + '. Niks gekregen? Kijk even in je spam.'; },
+      inAgenda: 'Zet in je agenda', vraagWa: 'Vraag? Stuur een WhatsApp', nogEen: 'Nog een afspraak maken',
+      annGedaanKop: 'Je afspraak is geannuleerd', annGedaan: 'De afspraak is geannuleerd. Hopelijk tot een andere keer!', nieuwe: 'Nieuwe afspraak maken',
+      jeAfspraak: 'Je afspraak', annTeLaat: function (u) { return 'Annuleren via de website kan tot ' + u + ' uur van tevoren. Kun je toch niet? Laat het dan zo snel mogelijk weten.'; },
+      zeker: 'Weet je het zeker?', zekerTekst: 'Je afspraak wordt geannuleerd en de tijd komt weer vrij voor iemand anders.',
+      jaAnn: 'Ja, annuleer mijn afspraak', neeAnn: 'Nee, ik kom gewoon', annStart: 'Afspraak annuleren',
+      kiesBeh: 'Kies een behandeling', daarna: 'Daarna kies je een dag en tijd', kiesDag: 'Kies dag en tijd', tot: 'tot', kiesTijd: 'Kies een tijd', verder: 'Verder'
+    },
+    en: {
+      titel: 'Book an appointment', demo: 'Preview', demoTekst: 'This is a demo. No real emails are sent.', demoBeheer: 'View the admin page',
+      goedOmTeWeten: 'Good to know', stap1: 'Treatment', stap2: 'Date and time', stap3: 'Details', stappen: 'Steps',
+      foutKop: 'The calendar is not loading', opnieuw: 'Try again', kop1: 'What would you like to book?', extras: 'Extras', optioneel: '· optional',
+      kop2: 'When would you like to come?', kop3: 'Almost done', lblNaam: 'Name', lblTel: 'Phone number', lblMail: 'Email', hintMail: 'for your confirmation',
+      lblOpm: 'Note', hintOpm: 'optional, e.g. colour or inspiration', privacyKort: 'We only use your details for your appointment.',
+      totSnel: 'See you soon!', privacy: 'Privacy',
+      privacyLang: 'We only use your name, phone number and email to arrange your appointment and to send you a confirmation and a reminder. We never share them. Would you like us to delete your details? Just send us a message.',
+      behandelingKeuze: 'Treatment', dagen: 'Days in ', terug: 'Back',
+      geenBeh: 'There are no treatments online yet.',
+      geenTijdenKop: 'There are no times available right now',
+      geenTijden: function (hulp) { return 'New times are added every week. Please check again later, or ' + hulp + ' to ask what is possible.'; },
+      stuurWa: 'Send a WhatsApp', stuurDm: 'Send a DM on Instagram', stuurWaKlein: 'send a WhatsApp', stuurDmKlein: 'send a DM on Instagram',
+      waTekst: function (wat) { return 'Hi! I would like to book an appointment for ' + wat + '.'; },
+      ochtend: 'Morning', middag: 'Afternoon', avond: 'Evening',
+      rBehandeling: 'Treatment', rWanneer: 'Date', rTijd: 'Time', rPrijs: 'Price', wijzigen: 'Change',
+      fNaam: 'Please enter your name.', fTel: 'Please enter a valid phone number, for example 06 12345678.', fMail: 'Please enter a valid email address.',
+      bezig: 'One moment…', bevestig: 'Confirm booking',
+      klaarTitel: function (n) { return 'You are booked, ' + n + '!'; },
+      klaarDemo: function (m) { return 'In the real version you would now receive a confirmation at ' + m + '.'; },
+      klaarMail: function (m) { return 'We have sent a confirmation to ' + m + '. Nothing there? Please check your spam folder.'; },
+      inAgenda: 'Add to your calendar', vraagWa: 'Questions? Send a WhatsApp', nogEen: 'Book another appointment',
+      annGedaanKop: 'Your appointment has been cancelled', annGedaan: 'The appointment has been cancelled. Hope to see you another time!', nieuwe: 'Book a new appointment',
+      jeAfspraak: 'Your appointment', annTeLaat: function (u) { return 'You can cancel online up to ' + u + ' hours in advance. Can\'t make it after all? Please let us know as soon as possible.'; },
+      zeker: 'Are you sure?', zekerTekst: 'Your appointment will be cancelled and the time becomes available for someone else.',
+      jaAnn: 'Yes, cancel my appointment', neeAnn: 'No, I will be there', annStart: 'Cancel appointment',
+      kiesBeh: 'Choose a treatment', daarna: 'Then choose a date and time', kiesDag: 'Choose date and time', tot: 'until', kiesTijd: 'Choose a time', verder: 'Next'
+    }
+  };
+  function t(k) { return T[R.taal()][k]; }
+  var IC = {
+    klok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    vink: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    terug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
+    ochtend: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    middag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 18a5 5 0 0 0-10 0"/><path d="M12 9V3M4.2 10.2l1.4 1.4M2 18h2M20 18h2M18.4 11.6l1.4-1.4M23 22H1"/></svg>',
+    avond: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20l1.3-3.9A8 8 0 1 1 8 19.1L4 20z"/></svg>',
+    camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.3" cy="6.7" r=".8" fill="currentColor"/></svg>',
+    agenda: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>'
+  };
+
+  var S = { info: null, beh: null, extras: [], datum: null, tijd: null, bezig: false, result: null, ann: null, annStaat: '' };
+  var params = new URLSearchParams(location.search);
+  var annId = params.get('annuleer'), annCode = params.get('code');
+  var KLANT = 'rp_klant';
+
+  R.setTaal(params.get('lang') || R.lsGet('rp_taal') || 'nl');
+  if (R.DEMO) $('#demo-bar').hidden = false;
+  $('#terug').innerHTML = IC.terug;
+
+  function vertaalPagina() {
+    var taal = R.taal();
+    document.documentElement.lang = taal;
+    document.title = t('titel') + ' · ' + ((S.info && S.info.salon.naam) || 'Ruby Pearl');
+    document.querySelectorAll('[data-t]').forEach(function (el) { el.textContent = t(el.dataset.t); });
+    document.querySelectorAll('[data-lang]').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.lang === taal); });
+    $('#steps').setAttribute('aria-label', t('stappen'));
+    $('#choices').setAttribute('aria-label', t('behandelingKeuze'));
+    $('#terug').setAttribute('aria-label', t('terug'));
+  }
+  document.querySelector('.lang').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-lang]');
+    if (!b || b.dataset.lang === R.taal()) return;
+    R.setTaal(b.dataset.lang); R.lsSet('rp_taal', b.dataset.lang);
+    vertaalPagina();
+    $('#form-fout').hidden = true;
+    if (S.ann) { vulSalon(S.ann.salon); laadAfspraak(true); }
+    else if (S.info) { vulSalon(S.info.salon); route(); }
+  });
+
+  /* ---------- helpers ---------- */
+  function naamVan(b) { return (R.taal() === 'en' && b.naam_en) || b.naam; }
+  function uitlegVan(b) { return (R.taal() === 'en' && b.omschrijving_en) || b.omschrijving; }
+  function behandeling(id) { id = id || S.beh; return S.info && S.info.behandelingen.filter(function (b) { return b.id === id; })[0]; }
+  function gekozenExtras(ids) { ids = ids || S.extras; return S.info ? S.info.extras.filter(function (x) { return ids.indexOf(x.id) >= 0; }) : []; }
+  function duur() { var b = behandeling(); return b ? b.duur + gekozenExtras().reduce(function (t, x) { return t + x.duur; }, 0) : 0; }
+  function prijs(id, ids) { var b = behandeling(id); return b ? R.totaalPrijs([b].concat(gekozenExtras(ids))) : ''; }
+  function naamMetExtras(id, ids) {
+    var b = behandeling(id); if (!b) return '';
+    var x = gekozenExtras(ids).map(naamVan);
+    return naamVan(b) + (x.length ? ' + ' + x.join(' + ') : '');
+  }
+
+  function dagIndex(k) { return R.dagVerschil(S.info.nu.datum, k); }
+  function vrijOp(k) { return R.vrijeTijden(S.info.dagen[k], duur(), S.info.regels, dagIndex(k), S.info.nu.min); }
+  function beschikbareDagen() {
+    if (!S.info || !S.beh) return [];
+    return Object.keys(S.info.dagen).sort().filter(function (k) {
+      var i = dagIndex(k);
+      return i >= 0 && i <= S.info.regels.maxDagen && vrijOp(k).length;
+    });
+  }
+  function controleerKeuze() {
+    if (S.beh && !behandeling()) S.beh = null;
+    if (!S.beh && S.info.behandelingen.length === 1) S.beh = S.info.behandelingen[0].id;
+    S.extras = S.extras.filter(function (id) { return S.info.extras.some(function (x) { return x.id === id; }); });
+    if (!S.beh) { S.datum = null; S.tijd = null; return; }
+    var dagen = beschikbareDagen();
+    if (S.datum && dagen.indexOf(S.datum) < 0) { S.datum = null; S.tijd = null; }
+    if (!S.datum) S.datum = dagen[0] || null;
+    if (S.tijd !== null && (!S.datum || vrijOp(S.datum).indexOf(S.tijd) < 0)) S.tijd = null;
+  }
+
+  function toon(view) {
+    document.querySelectorAll('[data-view]').forEach(function (el) { el.hidden = el.dataset.view !== view; });
+    var stappen = ['behandeling', 'moment', 'gegevens'], i = stappen.indexOf(view);
+    $('#steps').hidden = i < 0;
+    document.querySelectorAll('#steps li').forEach(function (li, j) {
+      li.className = j < i ? 'done' : j === i ? 'now' : '';
+      if (j === i) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+    });
+    renderDock(view);
+  }
+
+  /* ---------- salon ---------- */
+  function vulSalon(s) {
+    if (!s) return;
+    var en = R.taal() === 'en';
+    var onder = en && s.ondertitel_en ? s.ondertitel_en : s.ondertitel === undefined ? 'BIAB & gel nails' : s.ondertitel;
+    var goed = (en && s.goed_om_te_weten_en) || s.goed_om_te_weten;
+    $('#salon-naam').textContent = s.naam || 'Ruby Pearl';
+    $('#salon-tag').textContent = [onder, s.plaats].filter(Boolean).join(' · ');
+    $('#footer-naam').textContent = '© ' + (s.naam || 'Ruby Pearl');
+    $('#goed').hidden = !goed;
+    $('#goed-tekst').textContent = goed || '';
+    var h = '';
+    if (s.instagram) h += '<a href="https://instagram.com/' + encodeURIComponent(s.instagram) + '" target="_blank" rel="noopener">' + IC.camera + '@' + R.esc(s.instagram) + '</a>';
+    if (s.whatsapp) h += '<a href="' + R.waLink(s.whatsapp) + '" target="_blank" rel="noopener">' + IC.chat + 'WhatsApp</a>';
+    $('#contact').innerHTML = h;
+    document.title = t('titel') + ' · ' + (s.naam || 'Ruby Pearl');
+  }
+
+  /* ---------- stap 1: behandeling ---------- */
+  function renderBehandeling() {
+    var I = S.info;
+    $('#choices').innerHTML = I.behandelingen.map(function (b) {
+      var p = R.prijsTekst(b.prijs), u = uitlegVan(b);
+      return '<button type="button" class="choice" role="radio" aria-checked="' + (S.beh === b.id) + '" data-id="' + R.esc(b.id) + '">' +
+        '<span class="pearl" aria-hidden="true"></span><span class="choice-body">' +
+        '<span class="choice-top"><b>' + R.esc(naamVan(b)) + '</b>' + (p ? '<span class="price">' + R.esc(p) + '</span>' : '') + '</span>' +
+        (u ? '<span class="desc">' + R.esc(u) + '</span>' : '') +
+        '<span class="meta">' + IC.klok + R.duurTekst(b.duur) + '</span></span></button>';
+    }).join('') || '<div class="empty"><p>' + t('geenBeh') + '</p></div>';
+    $('#extras-titel').hidden = !I.extras.length;
+    $('#extras').innerHTML = I.extras.map(function (x) {
+      var p = R.prijsTekst(x.prijs), u = uitlegVan(x), meta = [];
+      if (x.duur) meta.push('+' + R.duurTekst(x.duur));
+      if (p) meta.push('+' + p);
+      return '<label class="extra"><input type="checkbox" value="' + R.esc(x.id) + '"' + (S.extras.indexOf(x.id) >= 0 ? ' checked' : '') + '>' +
+        '<span class="box">' + IC.vink + '</span><span class="ex-name">' + R.esc(naamVan(x)) + (u ? '<small>' + R.esc(u) + '</small>' : '') + '</span>' +
+        '<span class="ex-meta">' + R.esc(meta.join(' · ')) + '</span></label>';
+    }).join('');
+  }
+  $('#choices').addEventListener('click', function (e) {
+    var b = e.target.closest('.choice'); if (!b) return;
+    S.beh = b.dataset.id; controleerKeuze(); renderBehandeling(); renderDock('behandeling');
+  });
+  $('#choices').addEventListener('keydown', function (e) {
+    if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].indexOf(e.key) < 0) return;
+    var lijst = S.info.behandelingen, i = Math.max(0, lijst.findIndex(function (b) { return b.id === S.beh; }));
+    i = (i + (e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : lijst.length - 1)) % lijst.length;
+    S.beh = lijst[i].id; controleerKeuze(); renderBehandeling(); renderDock('behandeling');
+    $('#choices [data-id="' + CSS.escape(S.beh) + '"]').focus(); e.preventDefault();
+  });
+  $('#extras').addEventListener('change', function (e) {
+    var id = e.target.value;
+    S.extras = e.target.checked ? S.extras.concat([id]) : S.extras.filter(function (x) { return x !== id; });
+    controleerKeuze(); renderDock('behandeling');
+  });
+
+  /* ---------- stap 2: dag en tijd ---------- */
+  function renderMoment() {
+    var dagen = beschikbareDagen();
+    $('#moment-sub').textContent = naamMetExtras() + ' · ' + R.duurTekst(duur());
+    if (!dagen.length) {
+      var s = S.info.salon, knop = '';
+      if (s.whatsapp) knop = '<a class="btn btn-sm" href="' + R.waLink(s.whatsapp, t('waTekst')(naamMetExtras())) + '" target="_blank" rel="noopener">' + t('stuurWa') + '</a>';
+      else if (s.instagram) knop = '<a class="btn btn-sm" href="https://instagram.com/' + encodeURIComponent(s.instagram) + '" target="_blank" rel="noopener">' + t('stuurDm') + '</a>';
+      $('#dagen-wrap').innerHTML = '<div class="empty"><strong>' + t('geenTijdenKop') + '</strong><p>' + t('geenTijden')(s.whatsapp ? t('stuurWaKlein') : t('stuurDmKlein')) + '</p>' + knop + '</div>';
+      $('#tijden-wrap').innerHTML = '';
+      return;
+    }
+    var h = '', maand = '';
+    dagen.forEach(function (k) {
+      var m = R.maandNaam(k);
+      if (m !== maand) { if (maand) h += '</div>'; h += '<p class="month">' + m + '</p><div class="days" role="group" aria-label="' + t('dagen') + m + '">'; maand = m; }
+      h += '<button type="button" class="day" data-k="' + k + '" aria-pressed="' + (S.datum === k) + '" aria-label="' + R.datumLang(k) + '">' +
+        '<span class="wd">' + R.dagKort(k) + '</span><span class="d">' + R.dagGetal(k) + '</span><span class="m">' + R.maandKort(k) + '</span></button>';
+    });
+    $('#dagen-wrap').innerHTML = '<div style="display:grid;gap:14px">' + h + '</div></div>';
+    renderTijden();
+  }
+  function renderTijden() {
+    if (!S.datum) { $('#tijden-wrap').innerHTML = ''; return; }
+    var tijden = vrijOp(S.datum);
+    var groepen = [['ochtend', 0, 720], ['middag', 720, 1020], ['avond', 1020, 1441]];
+    $('#tijden-wrap').innerHTML = '<div class="slot-groups"><h3 class="sub-title" style="margin:0">' + R.datumLang(S.datum) + '</h3>' + groepen.map(function (g) {
+      var lijst = tijden.filter(function (m) { return m >= g[1] && m < g[2]; });
+      if (!lijst.length) return '';
+      return '<div class="slot-group"><h3>' + IC[g[0]] + t(g[0]) + '</h3><div class="slots">' + lijst.map(function (m) {
+        return '<button type="button" class="slot" data-m="' + m + '" aria-pressed="' + (S.tijd === m) + '">' + R.naarTijd(m) + '</button>';
+      }).join('') + '</div></div>';
+    }).join('') + '</div>';
+  }
+  $('#dagen-wrap').addEventListener('click', function (e) {
+    var b = e.target.closest('.day'); if (!b) return;
+    S.datum = b.dataset.k; S.tijd = null;
+    document.querySelectorAll('.day').forEach(function (d) { d.setAttribute('aria-pressed', d === b); });
+    renderTijden(); renderDock('moment');
+  });
+  $('#tijden-wrap').addEventListener('click', function (e) {
+    var b = e.target.closest('.slot'); if (!b) return;
+    S.tijd = +b.dataset.m;
+    document.querySelectorAll('.slot').forEach(function (d) { d.setAttribute('aria-pressed', d === b); });
+    renderDock('moment');
+  });
+
+  /* ---------- stap 3: gegevens ---------- */
+  function recapHtml(a) {
+    var rows = [[t('rBehandeling'), a.wat], [t('rWanneer'), R.datumLang(a.datum)], [t('rTijd'), a.tijd + ' – ' + a.eind]];
+    if (a.prijs) rows.push([t('rPrijs'), a.prijs]);
+    return rows.map(function (r) { return '<div><dt>' + r[0] + '</dt><dd>' + R.esc(r[1]) + '</dd></div>'; }).join('');
+  }
+  function keuzeRecap(k) {
+    return { wat: naamMetExtras(k.beh, k.extras), datum: k.datum, tijd: R.naarTijd(k.tijd), eind: R.naarTijd(k.tijd + k.duur), prijs: prijs(k.beh, k.extras) };
+  }
+  function huidigeKeuze() { return { beh: S.beh, extras: S.extras.slice(), datum: S.datum, tijd: S.tijd, duur: duur() }; }
+  function renderGegevens() {
+    $('#recap').innerHTML = recapHtml(keuzeRecap(huidigeKeuze())) + '<div><dt></dt><dd><button type="button" class="link-btn" id="wijzig">' + t('wijzigen') + '</button></dd></div>';
+    var k = R.lsGet(KLANT);
+    if (k) ['naam', 'tel', 'mail'].forEach(function (f) { var el = $('#f-' + f); if (!el.value && k[f]) el.value = k[f]; });
+  }
+  $('#recap').addEventListener('click', function (e) { if (e.target.id === 'wijzig') ga('moment'); });
+
+  function fout(msg, veld) {
+    var el = $('#form-fout');
+    el.textContent = msg; el.hidden = !msg;
+    document.querySelectorAll('#boek-form input').forEach(function (i) { i.removeAttribute('aria-invalid'); });
+    if (veld) { veld.setAttribute('aria-invalid', 'true'); veld.focus(); }
+  }
+  $('#boek-form').addEventListener('input', function (e) {
+    if (e.target.getAttribute('aria-invalid')) { e.target.removeAttribute('aria-invalid'); $('#form-fout').hidden = true; }
+  });
+  $('#boek-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (S.bezig) return;
+    var naam = $('#f-naam').value.trim(), tel = $('#f-tel').value.trim(), mail = $('#f-mail').value.trim();
+    if (naam.length < 2) return fout(t('fNaam'), $('#f-naam'));
+    if (tel.replace(/\D/g, '').length < 9) return fout(t('fTel'), $('#f-tel'));
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(mail)) return fout(t('fMail'), $('#f-mail'));
+    fout('');
+    S.bezig = true; renderDock('gegevens');
+    var keuze = huidigeKeuze();
+    R.api('boek', {
+      behandeling: S.beh, extras: S.extras, datum: S.datum, tijd: R.naarTijd(S.tijd), taal: R.taal(),
+      naam: naam, telefoon: tel, email: mail, opmerking: $('#f-opm').value.trim(), website: $('#f-web').value
+    }).then(function (r) {
+      R.lsSet(KLANT, { naam: naam, tel: tel, mail: mail });
+      S.result = { ics: r.ics, keuze: keuze, email: mail, voornaam: naam.split(' ')[0] };
+      S.datum = null; S.tijd = null; $('#f-opm').value = '';
+      ga('klaar');
+      laadInfo(true);
+    }).catch(function (err) {
+      fout(err.message);
+      if (err.code === 'bezet') laadInfo(true);
+    }).then(function () { S.bezig = false; renderDock(huidigeStap()); });
+  });
+
+  /* ---------- klaar ---------- */
+  function renderKlaar() {
+    var r = S.result, s = S.info.salon;
+    $('#klaar-titel').textContent = t('klaarTitel')(r.voornaam);
+    $('#klaar-tekst').textContent = R.DEMO ? t('klaarDemo')(r.email) : t('klaarMail')(r.email);
+    $('#klaar-recap').innerHTML = recapHtml(keuzeRecap(r.keuze));
+    var h = '';
+    if (r.ics && !R.DEMO) {
+      var url = URL.createObjectURL(new Blob([r.ics], { type: 'text/calendar' }));
+      h += '<a class="btn btn-block" href="' + url + '" download="afspraak-' + R.esc((s.naam || 'salon').toLowerCase().replace(/\s+/g, '-')) + '.ics">' + IC.agenda + t('inAgenda') + '</a>';
+    }
+    if (s.whatsapp) h += '<a class="btn btn-light btn-block" href="' + R.waLink(s.whatsapp) + '" target="_blank" rel="noopener">' + IC.chat + t('vraagWa') + '</a>';
+    h += '<button class="btn btn-soft btn-block" type="button" id="nieuw">' + t('nogEen') + '</button>';
+    $('#klaar-acties').innerHTML = h;
+  }
+  $('#klaar-acties').addEventListener('click', function (e) {
+    if (e.target.id === 'nieuw') { S.result = null; S.beh = null; S.extras = []; controleerKeuze(); ga('behandeling'); }
+  });
+
+  /* ---------- annuleren via de link uit de mail ---------- */
+  function renderAnnuleren(staat) {
+    if (staat !== undefined) S.annStaat = staat;
+    staat = S.annStaat;
+    var r = S.ann, a = r.afspraak, s = r.salon;
+    $('#ann-recap').innerHTML = recapHtml({ wat: a.wat || (a.behandeling + (a.extras ? ' + ' + a.extras : '')), datum: a.datum, tijd: a.tijd, eind: a.eind, prijs: R.prijsTekst(a.prijs) });
+    var h = '';
+    var contact = s.whatsapp ? '<a class="btn btn-light" href="' + R.waLink(s.whatsapp) + '" target="_blank" rel="noopener">' + IC.chat + t('stuurWa') + '</a>' : '';
+    if (staat === 'klaar' || a.status !== 'bevestigd') {
+      $('#ann-titel').textContent = t('annGedaanKop');
+      h = '<p class="alert alert-ok">' + t('annGedaan') + '</p><a class="btn" href="' + location.pathname + (R.taal() === 'en' ? '?lang=en' : '') + '">' + t('nieuwe') + '</a>';
+    } else if (!r.kanAnnuleren) {
+      $('#ann-titel').textContent = t('jeAfspraak');
+      h = '<p class="alert alert-info">' + t('annTeLaat')(r.annulerenUren) + '</p>' + contact;
+    } else if (staat === 'zeker') {
+      $('#ann-titel').textContent = t('zeker');
+      h = '<p class="alert alert-info">' + t('zekerTekst') + '</p>' +
+        '<button class="btn btn-danger" type="button" id="ann-ja">' + t('jaAnn') + '</button><button class="btn btn-light" type="button" id="ann-nee">' + t('neeAnn') + '</button>';
+    } else {
+      $('#ann-titel').textContent = t('jeAfspraak');
+      h = '<button class="btn btn-light" type="button" id="ann-start">' + t('annStart') + '</button>';
+    }
+    $('#ann-acties').innerHTML = h + '<p class="alert alert-err" id="ann-fout" hidden></p>';
+  }
+  $('#ann-acties').addEventListener('click', function (e) {
+    var id = e.target.id;
+    if (id === 'ann-start') renderAnnuleren('zeker');
+    if (id === 'ann-nee') renderAnnuleren('');
+    if (id === 'ann-ja') {
+      e.target.disabled = true; e.target.textContent = t('bezig');
+      R.api('annuleren', { id: annId, code: annCode, taal: R.taal() }).then(function () { renderAnnuleren('klaar'); }).catch(function (err) {
+        renderAnnuleren('zeker'); var f = $('#ann-fout'); f.textContent = err.message; f.hidden = false;
+      });
+    }
+  });
+  function laadAfspraak(stil) {
+    if (!stil) toon('laden');
+    R.api('afspraak', { id: annId, code: annCode, taal: R.taal() }).then(function (r) {
+      S.ann = r; vulSalon(r.salon); renderAnnuleren(); toon('annuleren');
+    }).catch(function (err) { $('#fout-tekst').textContent = err.message; $('#opnieuw').hidden = true; toon('fout'); });
+  }
+
+  /* ---------- balk onderin ---------- */
+  function renderDock(view) {
+    var d = $('#dock'), sum = $('#dock-sum'), knop = $('#verder'), terug = $('#terug');
+    d.hidden = ['behandeling', 'moment', 'gegevens'].indexOf(view) < 0;
+    if (d.hidden) return;
+    terug.hidden = view === 'behandeling';
+    knop.removeAttribute('form'); knop.type = 'button';
+    var p = prijs();
+    if (view === 'behandeling') {
+      sum.innerHTML = S.beh ? '<b>' + R.esc(naamMetExtras()) + '</b><span>' + R.duurTekst(duur()) + (p ? ' · ' + p : '') + '</span>' : '<b>' + t('kiesBeh') + '</b><span>' + t('daarna') + '</span>';
+      knop.textContent = t('kiesDag'); knop.disabled = !S.beh;
+    } else if (view === 'moment') {
+      sum.innerHTML = S.datum && S.tijd !== null
+        ? '<b>' + R.datumKort(S.datum) + ' · ' + R.naarTijd(S.tijd) + '</b><span>' + t('tot') + ' ' + R.naarTijd(S.tijd + duur()) + (p ? ' · ' + p : '') + '</span>'
+        : '<b>' + t('kiesTijd') + '</b><span>' + R.esc(naamMetExtras()) + '</span>';
+      knop.textContent = t('verder'); knop.disabled = S.tijd === null || !S.datum;
+    } else {
+      var b = behandeling();
+      sum.innerHTML = '<b>' + R.esc(b ? naamVan(b) : '') + ' · ' + (S.datum ? R.datumKort(S.datum) : '') + '</b><span>' + (S.tijd !== null ? R.naarTijd(S.tijd) + ' – ' + R.naarTijd(S.tijd + duur()) : '') + (p ? ' · ' + p : '') + '</span>';
+      knop.type = 'submit'; knop.setAttribute('form', 'boek-form');
+      knop.textContent = S.bezig ? t('bezig') : t('bevestig'); knop.disabled = S.bezig;
+    }
+  }
+  $('#verder').addEventListener('click', function () {
+    var v = huidigeStap();
+    if (v === 'behandeling' && S.beh) ga('moment');
+    else if (v === 'moment' && S.tijd !== null) ga('gegevens');
+  });
+  $('#terug').addEventListener('click', function () { history.back(); });
+
+  /* ---------- navigatie ---------- */
+  function huidigeStap() {
+    var h = location.hash.replace('#', '');
+    return ['behandeling', 'moment', 'gegevens', 'klaar'].indexOf(h) >= 0 ? h : 'behandeling';
+  }
+  function ga(stap) {
+    if (huidigeStap() === stap && location.hash) route();
+    else location.hash = stap;
+    var top = $('#flow').getBoundingClientRect().top + window.scrollY - 12;
+    if (window.scrollY > top) window.scrollTo(0, Math.max(0, top));
+  }
+  function route() {
+    if (!S.info || S.ann) return;
+    var st = huidigeStap();
+    if (st === 'klaar' && !S.result) st = 'behandeling';
+    if (st === 'gegevens' && (S.tijd === null || !S.datum)) st = S.beh ? 'moment' : 'behandeling';
+    if (st === 'moment' && !S.beh) st = 'behandeling';
+    if (st !== location.hash.replace('#', '') && location.hash) history.replaceState(null, '', '#' + st);
+    if (st === 'behandeling') renderBehandeling();
+    if (st === 'moment') renderMoment();
+    if (st === 'gegevens') renderGegevens();
+    if (st === 'klaar') renderKlaar();
+    toon(st);
+  }
+  window.addEventListener('hashchange', route);
+
+  function laadInfo(stil) {
+    if (!stil) toon('laden');
+    return R.api('info').then(function (info) {
+      S.info = info; vulSalon(info.salon); controleerKeuze();
+      if (!stil) route();
+      else if (huidigeStap() === 'moment') { renderMoment(); renderDock('moment'); }
+    }).catch(function (err) {
+      if (stil) return;
+      $('#fout-tekst').textContent = err.message; toon('fout');
+    });
+  }
+  $('#opnieuw').addEventListener('click', function () { laadInfo(false); });
+
+  vertaalPagina();
+  if (annId && annCode) laadAfspraak(false);
+  else laadInfo(false);
+  // Vernieuw de tijden als iemand na een tijdje terugkomt op de pagina.
+  var laatst = Date.now();
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && S.info && !S.ann && Date.now() - laatst > 120000) { laatst = Date.now(); laadInfo(true); }
+  });
+})();
+</script>
+</body>
+</html>

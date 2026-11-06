@@ -1,0 +1,4 @@
+Plak hieronder de link uit Google Apps Script (die eindigt op /exec).
+Zet hem op een eigen regel en sla het bestand op.
+
+https://script.google.com/macros/s/AKfycbzdDtY5m2sPfHJOiQVIQlm7vEZyeWnHX2Gj-RzA4wVYNsWb0a69Rt9OH87p7oxXpCMkQw/exec

@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Beheer · Ruby Pearl</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#FAF7F5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ruby Pearl">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..600;1,6..96,400..500&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+<script>
+/* Ruby Pearl – gedeelde code voor de boekingspagina en de beheerpagina. */
+(function () {
+  'use strict';
+  var C = window.RP_CONFIG || {};
+  var DEMO = !!C.DEMO;
+  var API = String(C.API_URL || '').trim();
+  // De link naar Google staat in koppeling.txt, naast deze pagina.
+  var apiKlaar = null;
+  function apiUrl() {
+    if (API) return Promise.resolve(API);
+    if (!apiKlaar) {
+      apiKlaar = fetch('koppeling.txt', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (t) { var m = /https?:\/\/[^\s'"<>]+/.exec(t); API = m ? m[0] : ''; return API; })
+        .catch(function () { return ''; });
+    }
+    return apiKlaar;
+  }
+
+  var NAMEN = {
+    nl: { dagen: ['zondag', 'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag'], kort: 2,
+          maanden: ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'], uur: 'uur' },
+    en: { dagen: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'], kort: 3,
+          maanden: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'], uur: 'hr' }
+  };
+  var TAAL = 'nl';
+  function setTaal(t) { TAAL = t === 'en' ? 'en' : 'nl'; }
+  function taal() { return TAAL; }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function naarMin(t) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(t == null ? '' : t).trim());
+    return m ? (+m[1]) * 60 + (+m[2]) : NaN;
+  }
+  function naarTijd(m) { return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
+  function utc(k) { var p = k.split('-').map(Number); return Date.UTC(p[0], p[1] - 1, p[2]); }
+  function plusDagen(k, n) { var d = new Date(utc(k) + n * 864e5); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); }
+  function dagVerschil(a, b) { return Math.round((utc(b) - utc(a)) / 864e5); }
+  function dagNr(k) { return new Date(utc(k)).getUTCDay(); }
+  function dagNaam(k) { return NAMEN[TAAL].dagen[dagNr(k)]; }
+  function dagKort(k) { return NAMEN[TAAL].dagen[dagNr(k)].slice(0, NAMEN[TAAL].kort); }
+  function dagGetal(k) { return new Date(utc(k)).getUTCDate(); }
+  function maandNaam(k) { return NAMEN[TAAL].maanden[new Date(utc(k)).getUTCMonth()]; }
+  function maandKort(k) { return maandNaam(k).slice(0, 3); }
+  function datumLang(k) { return dagNaam(k) + ' ' + dagGetal(k) + ' ' + maandNaam(k); }
+  function datumKort(k) { return dagKort(k) + ' ' + dagGetal(k) + ' ' + maandKort(k); }
+  function maandag(k) { return plusDagen(k, -((dagNr(k) + 6) % 7)); }
+  function weekNr(k) {
+    var d = new Date(utc(k)); var dag = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - dag + 3);
+    var eersteDo = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+    return 1 + Math.round(((d - eersteDo) / 864e5 - 3 + ((eersteDo.getUTCDay() + 6) % 7)) / 7);
+  }
+
+  function duurTekst(m) {
+    m = +m || 0;
+    var h = Math.floor(m / 60), r = m % 60;
+    var u = NAMEN[TAAL].uur;
+    if (h && r) return h + ' ' + u + ' ' + r + ' min';
+    if (h) return h + ' ' + u;
+    return r + ' min';
+  }
+  function prijsGetal(p) {
+    var s = String(p == null ? '' : p).replace(/€/g, '').replace(/\s/g, '').replace(',', '.');
+    return /^\d+(\.\d{1,2})?$/.test(s) ? parseFloat(s) : NaN;
+  }
+  function euro(g) { return '€' + (g % 1 ? g.toFixed(2).replace('.', ',') : String(g)); }
+  function prijsTekst(p) {
+    var s = String(p == null ? '' : p).trim();
+    if (!s) return '';
+    var g = prijsGetal(s);
+    return isNaN(g) ? s : euro(g);
+  }
+  // Zelfde regel als in de backend: alleen een totaal als alles een getal is.
+  function totaalPrijs(items) {
+    if (!items.length || !String(items[0].prijs || '').trim()) return '';
+    var som = 0;
+    for (var i = 0; i < items.length; i++) {
+      var p = String(items[i].prijs || '').trim();
+      if (!p) continue;
+      var g = prijsGetal(p);
+      if (isNaN(g)) return '';
+      som += g;
+    }
+    return euro(som);
+  }
+
+  function samenvoegen(blokken) {
+    var s = blokken.slice().sort(function (a, b) { return a[0] - b[0]; }), uit = [];
+    s.forEach(function (b) { var l = uit[uit.length - 1]; if (l && b[0] <= l[1]) l[1] = Math.max(l[1], b[1]); else uit.push([b[0], b[1]]); });
+    return uit;
+  }
+  // Zelfde rekenregel als vrijeTijden_ in Code.gs.
+  function vrijeTijden(dag, duur, r, dagIndex, nuMin) {
+    var uit = [];
+    if (!dag) return uit;
+    var stap = Math.max(5, r.stap || 30), pauze = r.pauze || 0, minV = r.minVooruit || 0;
+    dag.open.forEach(function (blok) {
+      for (var m = blok[0]; m + duur <= blok[1]; m += stap) {
+        if (dagIndex * 1440 + m - nuMin < minV) continue;
+        var botst = dag.bezet.some(function (b) { return m < b[1] + pauze && m + duur + pauze > b[0]; });
+        if (!botst && uit.indexOf(m) < 0) uit.push(m);
+      }
+    });
+    return uit.sort(function (a, b) { return a - b; });
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+  }
+  function waNummer(t) {
+    var d = String(t || '').replace(/[^\d+]/g, '');
+    if (d.indexOf('+') === 0) d = d.slice(1);
+    else if (d.indexOf('00') === 0) d = d.slice(2);
+    else if (d.indexOf('0') === 0) d = '31' + d.slice(1);
+    return d.replace(/\D/g, '');
+  }
+  function waLink(nummer, tekst) { return 'https://wa.me/' + waNummer(nummer) + (tekst ? '?text=' + encodeURIComponent(tekst) : ''); }
+  function telLink(nummer) { return 'tel:' + String(nummer || '').replace(/[^\d+]/g, ''); }
+
+  function lsGet(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+  function lsSet(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* geen opslag */ } }
+
+  function wacht(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function laadScript(src) {
+    return new Promise(function (ok, nee) {
+      var s = document.createElement('script');
+      s.src = src; s.onload = ok; s.onerror = function () { nee(new Error('Demo kon niet laden.')); };
+      document.head.appendChild(s);
+    });
+  }
+  var demoKlaar = null;
+  function laadDemo() {
+    if (!demoKlaar) demoKlaar = laadScript('demo/stubs.js').then(function () { return laadScript('demo/backend.js'); }).then(function () { return laadScript('demo/seed.js'); });
+    return demoKlaar;
+  }
+
+  function controleer(j) {
+    if (!j || !j.ok) {
+      var e = new Error((j && j.fout) || 'Er ging iets mis. Probeer het opnieuw.');
+      e.login = !!(j && j.login);
+      throw e;
+    }
+    return j;
+  }
+
+  function api(action, data) {
+    var body = Object.assign({ action: action }, data || {});
+    if (DEMO) {
+      return laadDemo().then(function () { return wacht(action === 'info' ? 350 : 450); }).then(function () {
+        return controleer(JSON.parse(window.doPost({ postData: { contents: JSON.stringify(body) } }).getContent()));
+      });
+    }
+    return apiUrl().then(function (url) {
+      if (!url) throw new Error('De website is nog niet gekoppeld aan Google. Zet je link in koppeling.txt.');
+      var verzoek = action === 'info'
+        ? fetch(url + (url.indexOf('?') < 0 ? '?' : '&') + 'action=info', { cache: 'no-store' })
+        : fetch(url, { method: 'POST', body: JSON.stringify(body) });
+      return verzoek.then(function (res) {
+        return res.json().catch(function () { throw new Error('De agenda reageert niet goed. Probeer het later opnieuw.'); });
+      }, function () {
+        throw new Error('Geen verbinding. Check je internet en probeer het opnieuw.');
+      });
+    }).then(controleer);
+  }
+
+  window.RP = {
+    DEMO: DEMO, api: api, setTaal: setTaal, taal: taal, pad: pad, naarMin: naarMin, naarTijd: naarTijd, plusDagen: plusDagen, dagVerschil: dagVerschil,
+    dagNaam: dagNaam, dagKort: dagKort, dagGetal: dagGetal, maandNaam: maandNaam, maandKort: maandKort,
+    datumLang: datumLang, datumKort: datumKort, maandag: maandag, weekNr: weekNr,
+    duurTekst: duurTekst, prijsGetal: prijsGetal, prijsTekst: prijsTekst, totaalPrijs: totaalPrijs, euro: euro,
+    samenvoegen: samenvoegen, vrijeTijden: vrijeTijden, esc: esc, waNummer: waNummer, waLink: waLink, telLink: telLink,
+    lsGet: lsGet, lsSet: lsSet
+  };
+})();
+</script>
+</head>
+<body>
+
+<div class="demo-bar" id="demo-bar" hidden>
+  <div class="in">
+    <b>Voorbeeld</b>
+    <span>Beheer in de demo. Wachtwoord: <strong>nagels</strong></span>
+    <a href="index.html">Naar de boekingspagina</a>
+    <button type="button" id="demo-reset">Demo opnieuw beginnen</button>
+  </div>
+</div>
+
+<div class="login" id="login" hidden>
+  <form id="login-form" novalidate>
+    <img src="logo.png" alt="Ruby Pearl" width="96" height="96">
+    <h1>Beheer</h1>
+    <p>Log in om je afspraken en werktijden te beheren.</p>
+    <div class="field">
+      <label for="ww">Wachtwoord</label>
+      <input id="ww" type="password" autocomplete="current-password" required>
+    </div>
+    <p class="alert alert-err" id="login-fout" role="alert" hidden></p>
+    <button class="btn btn-block" type="submit" id="login-knop">Inloggen</button>
+  </form>
+</div>
+
+<div class="adm" id="app" hidden>
+  <header class="adm-top">
+    <div class="in">
+      <img src="logo.png" alt="" width="38" height="38">
+      <h1 id="titel">Afspraken</h1>
+      <button class="icon-btn" type="button" id="ververs" aria-label="Vernieuwen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+      </button>
+    </div>
+  </header>
+  <main class="adm-main" id="main"></main>
+  <div class="savebar" id="savebar" hidden>
+    <div class="in"><span>Niet opgeslagen</span><span style="display:flex;gap:6px"><button class="btn" type="button" id="ongedaan" style="background:transparent;color:#fff">Ongedaan</button><button class="btn" type="button" id="opslaan">Opslaan</button></span></div>
+  </div>
+  <nav class="tabs" aria-label="Menu">
+    <div class="in">
+      <a href="#afspraken" data-tab="afspraken"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M7.5 14h3M7.5 17.5h6"/></svg>Afspraken<span class="count" id="nieuw-count" hidden></span></a>
+      <a href="#werktijden" data-tab="werktijden"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Werktijden</a>
+      <a href="#behandelingen" data-tab="behandelingen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M9 10h6l1 10H8l1-10z"/><path d="M10 10V6a2 2 0 0 1 4 0v4"/></svg>Behandelingen</a>
+      <a href="#instellingen" data-tab="instellingen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Instellingen</a>
+    </div>
+  </nav>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+  var R = window.RP;
+  var $ = function (s) { return document.querySelector(s); };
+  var IC = {
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20l1.3-3.9A8 8 0 1 1 8 19.1L4 20z"/></svg>',
+    bel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 4h3l2 5-2.5 1.5a11 11 0 0 0 6 6L15 14l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>',
+    mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',
+    x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    links: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
+    rechts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>',
+    neer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>'
+  };
+  var TITELS = { afspraken: 'Afspraken', werktijden: 'Werktijden', behandelingen: 'Behandelingen', instellingen: 'Instellingen' };
+  var S = {
+    token: R.lsGet('rp_token'), data: null, tab: 'afspraken', week: 0, oud: false, addOpen: null, cancelOpen: null,
+    draft: null, dirty: false, inst: null, instDirty: false, kopieerZeker: false, delZeker: null, open: {}, nieuwSinds: null, laatst: 0, bezig: false
+  };
+
+  if (R.DEMO) {
+    $('#demo-bar').hidden = false;
+    $('#demo-reset').addEventListener('click', function () {
+      R.lsSet('rp_token', null); R.lsSet('rp_gezien', null);
+      if (window.__RP_RESET) window.__RP_RESET();
+      try { localStorage.removeItem('rp_demo_store_v9'); } catch (e) {}
+      location.reload();
+    });
+  }
+
+  /* ---------- algemeen ---------- */
+  var toastTimer;
+  function toast(tekst, isFout) {
+    var t = $('#toast');
+    t.textContent = tekst; t.className = 'toast on' + (isFout ? ' err' : '');
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.className = 'toast' + (isFout ? ' err' : ''); }, isFout ? 4200 : 2200);
+  }
+  function nuTekst() { return S.data.nu.datum + ' ' + R.naarTijd(S.data.nu.min); }
+  function site() {
+    if (!/^https?:$/.test(location.protocol)) return '';
+    return location.origin + location.pathname.replace(/[^/]*$/, '');
+  }
+  function boekLink() { return (S.data && S.data.instellingen.website) || (R.DEMO ? '' : site()); }
+  function fout(err) {
+    if (err && err.login) { uitloggenLokaal(); toast('Log opnieuw in.', true); return; }
+    toast((err && err.message) || 'Er ging iets mis.', true);
+  }
+  function api(action, data) { return R.api(action, Object.assign({ token: S.token }, data || {})); }
+  function kopieer(tekst, el) {
+    var klaar = function () { toast('Link gekopieerd'); };
+    try {
+      navigator.clipboard.writeText(tekst).then(klaar, function () { selecteer(el); });
+    } catch (e) { selecteer(el); }
+  }
+  function selecteer(el) {
+    if (!el) return;
+    var r = document.createRange(); r.selectNodeContents(el);
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    toast('Kopieer de link met Kopiëren');
+  }
+
+  /* ---------- inloggen ---------- */
+  function toonLogin() { $('#app').hidden = true; $('#login').hidden = false; setTimeout(function () { $('#ww').focus(); }, 50); }
+  function uitloggenLokaal() { S.token = null; S.data = null; R.lsSet('rp_token', null); toonLogin(); }
+  $('#login-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var knop = $('#login-knop'), f = $('#login-fout');
+    if (!$('#ww').value) { f.textContent = 'Vul je wachtwoord in.'; f.hidden = false; return; }
+    knop.disabled = true; knop.textContent = 'Even geduld…'; f.hidden = true;
+    R.api('login', { wachtwoord: $('#ww').value }).then(function (r) {
+      S.token = r.token; R.lsSet('rp_token', r.token); $('#ww').value = '';
+      return laad();
+    }).catch(function (err) { f.textContent = err.message; f.hidden = false; })
+      .then(function () { knop.disabled = false; knop.textContent = 'Inloggen'; });
+  });
+
+  function laad() {
+    var knop = $('#ververs'); knop.classList.add('spin');
+    return api('beheer', { site: site() }).then(function (d) {
+      S.data = d; S.laatst = Date.now();
+      if (S.nieuwSinds === null) S.nieuwSinds = R.lsGet('rp_gezien') || (R.plusDagen(d.nu.datum, -1) + ' ' + R.naarTijd(d.nu.min));
+      if (!S.dirty) S.draft = null;
+      if (!S.instDirty) S.inst = null;
+      $('#login').hidden = true; $('#app').hidden = false;
+      route();
+    }).catch(fout).then(function () { knop.classList.remove('spin'); });
+  }
+  $('#ververs').addEventListener('click', function () { laad(); });
+
+  /* ---------- tabs ---------- */
+  function route() {
+    if (!S.data) return;
+    var t = location.hash.replace('#', '');
+    S.tab = TITELS[t] ? t : 'afspraken';
+    document.querySelectorAll('.tabs a').forEach(function (a) {
+      if (a.dataset.tab === S.tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    $('#titel').textContent = TITELS[S.tab];
+    ({ afspraken: renderAfspraken, werktijden: renderWerktijden, behandelingen: renderBehandelingen, instellingen: renderInstellingen })[S.tab]();
+    renderSavebar(); renderTeller();
+  }
+  window.addEventListener('hashchange', function () { S.kopieerZeker = false; S.delZeker = null; route(); window.scrollTo(0, 0); });
+
+  function renderTeller() {
+    var gezien = R.lsGet('rp_gezien') || S.nieuwSinds;
+    var n = S.data.afspraken.filter(function (a) { return a.status === 'bevestigd' && a.aangemaakt > gezien; }).length;
+    var c = $('#nieuw-count');
+    c.hidden = !n || S.tab === 'afspraken'; c.textContent = n;
+  }
+
+  /* ---------- afspraken ---------- */
+  function isKomend(a) {
+    var n = S.data.nu;
+    return a.datum > n.datum || (a.datum === n.datum && R.naarMin(a.tijd) + a.duur > n.min);
+  }
+  function dagKop(k) {
+    var n = S.data.nu.datum, v = R.dagVerschil(n, k);
+    var naam = v === 0 ? 'Vandaag' : v === 1 ? 'Morgen' : v === -1 ? 'Gisteren' : R.dagNaam(k).charAt(0).toUpperCase() + R.dagNaam(k).slice(1);
+    return '<p class="day-head"><b>' + naam + '</b>' + R.dagGetal(k) + ' ' + R.maandNaam(k) + '</p>';
+  }
+  function kaart(a) {
+    var eind = R.naarTijd(R.naarMin(a.tijd) + a.duur), uit = a.status !== 'bevestigd', voornaam = a.naam.split(' ')[0];
+    var badge = uit ? '<span class="badge grey">' + (a.status.indexOf('klant') >= 0 ? 'Geannuleerd door klant' : 'Geannuleerd') + '</span>'
+      : (a.aangemaakt > S.nieuwSinds ? '<span class="badge">Nieuw</span>' : '');
+    if (a.taal === 'en') badge += '<span class="badge grey">Engels</span>';
+    var h = '<article class="appt' + (uit ? ' off' : '') + '"><div class="appt-time"><b>' + R.esc(a.tijd) + '</b><span>' + eind + '</span></div><div class="appt-main">' +
+      '<h3>' + R.esc(a.behandeling) + (a.extras ? ' <small>+ ' + R.esc(a.extras) + '</small>' : '') + badge + '</h3>' +
+      '<p><strong>' + R.esc(a.naam) + '</strong>' + (a.prijs ? ' · ' + R.esc(R.prijsTekst(a.prijs)) : '') + '</p>' +
+      '<p>' + R.esc(a.telefoon) + ' · ' + R.esc(a.email) + '</p>' +
+      (a.opmerking ? '<p class="note">' + R.esc(a.opmerking) + '</p>' : '');
+    if (!uit && isKomend(a)) {
+      h += '<div class="appt-actions">' +
+        '<a class="act" href="' + R.waLink(a.telefoon, (a.taal === 'en' ? 'Hi ' : 'Hoi ') + voornaam + '! ') + '" target="_blank" rel="noopener">' + IC.chat + 'WhatsApp</a>' +
+        '<a class="act" href="' + R.telLink(a.telefoon) + '">' + IC.bel + 'Bellen</a>' +
+        '<button class="act danger" type="button" data-annuleer="' + R.esc(a.id) + '">Annuleren</button></div>';
+      if (S.cancelOpen === a.id) {
+        h += '<div class="cancel-box"><div class="field"><label for="ann-bericht">Bericht aan ' + R.esc(voornaam) + ' <span class="hint">optioneel</span></label>' +
+          '<textarea id="ann-bericht" placeholder="Bijvoorbeeld: ik ben helaas ziek. Je kunt een nieuwe afspraak maken via de website."></textarea></div>' +
+          '<label class="toggle-row"><input type="checkbox" id="ann-mail" checked> Stuur ' + R.esc(voornaam) + ' een mail</label>' +
+          '<div class="row"><button class="btn btn-danger btn-sm" type="button" data-bevestig="' + R.esc(a.id) + '">Ja, annuleer</button><button class="btn btn-light btn-sm" type="button" data-terug="1">Terug</button></div></div>';
+      }
+    }
+    return h + '</div></article>';
+  }
+  function lijst(afspraken) {
+    var h = '', dag = '';
+    afspraken.forEach(function (a) { if (a.datum !== dag) { h += dagKop(a.datum); dag = a.datum; } h += kaart(a); });
+    return h;
+  }
+  function renderAfspraken() {
+    var D = S.data, n = D.nu;
+    var komend = D.afspraken.filter(function (a) { return a.status === 'bevestigd' && isKomend(a); });
+    var vandaag = komend.filter(function (a) { return a.datum === n.datum; }).length;
+    var week = komend.filter(function (a) { return R.dagVerschil(n.datum, a.datum) < 7; }).length;
+    var link = boekLink();
+    var h = '<section class="sec"><div class="stats">' +
+      '<div class="stat"><b>' + vandaag + '</b><span>Vandaag</span></div>' +
+      '<div class="stat"><b>' + week + '</b><span>Komende 7 dagen</span></div>' +
+      '<div class="stat"><b>' + komend.length + '</b><span>Totaal gepland</span></div></div>';
+    if (link) h += '<div class="linkcard"><div><span class="eyebrow">Jouw boekingslink</span><span class="url" id="link-url">' + R.esc(link) + '</span></div><button class="btn btn-sm" type="button" id="kopieer-link">Kopieer</button></div>';
+    h += '</section><section class="sec">';
+    h += komend.length ? lijst(komend) : '<div class="empty"><strong>Nog geen afspraken</strong><p>Zodra een klant boekt, zie je die hier. Je krijgt dan ook een mail en de afspraak komt in je agenda.</p>' +
+      (D.afspraken.length ? '' : '<a class="btn btn-sm" href="#werktijden">Zet je werktijden open</a>') + '</div>';
+    var overig = D.afspraken.filter(function (a) { return komend.indexOf(a) < 0; }).reverse();
+    if (overig.length) {
+      h += '<label class="toggle-row" style="margin-top:6px"><input type="checkbox" id="toon-oud"' + (S.oud ? ' checked' : '') + '> Toon eerdere en geannuleerde afspraken (' + overig.length + ')</label>';
+      if (S.oud) h += lijst(overig);
+    }
+    h += '</section>';
+    if (R.DEMO && window.__RP_STORE) {
+      var mails = window.__RP_STORE().mail || [];
+      h += '<section class="sec"><div class="sec-head"><h2>E-mails in deze demo</h2></div><p class="lead">In de echte versie worden deze mails verstuurd vanaf haar Gmail. Hier zie je hoe ze eruitzien.</p>';
+      h += mails.length ? '<div class="mails">' + mails.map(function (m) {
+        return '<details class="mail"><summary><b>' + R.esc(m.subject) + '</b><span>Aan ' + R.esc(m.to) + (m.bijlage ? ' · met agenda-bijlage' : '') + '</span></summary><div class="mail-body">' + m.htmlBody + '</div></details>';
+      }).join('') + '</div>' : '<div class="empty"><p>Maak een afspraak op de boekingspagina, dan zie je hier de bevestigingsmail.</p><a class="btn btn-sm" href="index.html">Naar de boekingspagina</a></div>';
+      h += '</section>';
+    }
+    $('#main').innerHTML = h;
+    R.lsSet('rp_gezien', nuTekst());
+  }
+
+  /* ---------- werktijden ---------- */
+  var TIJDEN = []; for (var m = 6 * 60; m <= 23 * 60 + 30; m += 15) TIJDEN.push(R.naarTijd(m));
+  function presets(k) {
+    var tel = {}, bestaand = (S.data.werktijden[k] || []).map(function (b) { return b.join('-'); });
+    Object.keys(S.data.werktijden).forEach(function (d) { S.data.werktijden[d].forEach(function (b) { var s = b.join('-'); tel[s] = (tel[s] || 0) + 1; }); });
+    return Object.keys(tel).filter(function (s) { return bestaand.indexOf(s) < 0; }).sort(function (a, b) { return tel[b] - tel[a]; }).slice(0, 3);
+  }
+  function opties(gekozen) { return TIJDEN.map(function (t) { return '<option' + (t === gekozen ? ' selected' : '') + '>' + t + '</option>'; }).join(''); }
+  function renderWerktijden() {
+    var D = S.data, vandaag = D.nu.datum, ma = R.plusDagen(R.maandag(vandaag), S.week * 7), zo = R.plusDagen(ma, 6);
+    var bereik = R.dagGetal(ma) + (R.maandKort(ma) !== R.maandKort(zo) ? ' ' + R.maandKort(ma) : '') + ' – ' + R.dagGetal(zo) + ' ' + R.maandKort(zo);
+    var label = S.week === 0 ? 'Deze week' : S.week === 1 ? 'Volgende week' : 'Week ' + R.weekNr(ma);
+    var h = '<section class="sec"><p class="lead">Zet per dag open wanneer klanten kunnen boeken. Ze zien alleen tijden die nog vrij zijn.</p>' +
+      '<div class="weekbar"><button class="icon-btn" type="button" id="wk-vorige" aria-label="Vorige week"' + (S.week <= 0 ? ' disabled' : '') + '>' + IC.links + '</button>' +
+      '<div><b>' + label + '</b><span>Week ' + R.weekNr(ma) + ' · ' + bereik + '</span></div>' +
+      '<button class="icon-btn" type="button" id="wk-volgende" aria-label="Volgende week"' + (S.week >= 12 ? ' disabled' : '') + '>' + IC.rechts + '</button></div><div class="wdays">';
+    for (var i = 0; i < 7; i++) {
+      var k = R.plusDagen(ma, i), past = k < vandaag, blokken = D.werktijden[k] || [];
+      var bij = D.afspraken.filter(function (a) { return a.datum === k && a.status === 'bevestigd'; });
+      var adder = '';
+      h += '<div class="wday' + (past ? ' past' : '') + '"><div class="wname"><b>' + R.dagNaam(k).charAt(0).toUpperCase() + R.dagNaam(k).slice(1) + '</b><span>' + R.dagGetal(k) + ' ' + R.maandKort(k) + '</span>' + (k === vandaag ? '<em>vandaag</em>' : '') + '</div><div class="wbody">';
+      h += blokken.length ? blokken.map(function (b, j) {
+        return '<span class="chip">' + b[0] + ' – ' + b[1] + (past ? '' : '<button type="button" data-weg="' + k + '|' + j + '" aria-label="Haal ' + b[0] + ' tot ' + b[1] + ' weg">' + IC.x + '</button>') + '</span>';
+      }).join('') : '<span class="closed">' + (past ? '–' : 'Dicht') + '</span>';
+      if (!past) {
+        if (S.addOpen === k) {
+          var ps = presets(k), standaard = (ps[0] || '10:00-17:00').split('-');
+          adder = '<div class="adder">' + (ps.length ? '<div class="presets">Snel: ' + ps.map(function (p) { return '<button type="button" class="preset" data-preset="' + p + '">' + p.replace('-', ' – ') + '</button>'; }).join('') + '</div>' : '') +
+            '<div class="row"><select id="add-van" aria-label="Van">' + opties(standaard[0]) + '</select> tot <select id="add-tot" aria-label="Tot">' + opties(standaard[1]) + '</select></div>' +
+            '<div class="row"><button class="btn btn-sm" type="button" data-toevoegen="' + k + '">Toevoegen</button><button class="btn btn-light btn-sm" type="button" data-sluit="1">Annuleren</button></div></div>';
+        } else {
+          h += '<button class="add-btn" type="button" data-open="' + k + '">+ Tijd</button>';
+        }
+      }
+      if (bij.length) h += '<span class="wmeta">' + bij.length + (bij.length === 1 ? ' afspraak' : ' afspraken') + ': ' + bij.map(function (a) { return a.tijd; }).join(', ') + '</span>';
+      h += '</div>' + adder + '</div>';
+    }
+    h += '</div><button class="btn btn-light" type="button" id="kopieer-week">' + (S.kopieerZeker ? 'Zeker? Dit vervangt de tijden van deze week' : 'Kopieer de tijden van de week ervoor') + '</button></section>';
+    $('#main').innerHTML = h;
+  }
+  function bewaarDagen(keys) {
+    var dagen = {};
+    keys.forEach(function (k) { dagen[k] = S.data.werktijden[k] || []; });
+    return api('werktijden', { dagen: dagen }).then(function () { toast('Opgeslagen'); }).catch(function (err) { fout(err); laad(); });
+  }
+  function zetBlokken(k, blokken) {
+    var m = R.samenvoegen(blokken.map(function (b) { return [R.naarMin(b[0]), R.naarMin(b[1])]; }));
+    if (m.length) S.data.werktijden[k] = m.map(function (b) { return [R.naarTijd(b[0]), R.naarTijd(b[1])]; });
+    else delete S.data.werktijden[k];
+  }
+  function voegBlokToe(k, van, tot) {
+    if (R.naarMin(tot) <= R.naarMin(van)) { toast('De eindtijd moet na de begintijd liggen.', true); return; }
+    zetBlokken(k, (S.data.werktijden[k] || []).concat([[van, tot]]));
+    S.addOpen = null; renderWerktijden(); bewaarDagen([k]);
+  }
+
+  /* ---------- behandelingen ---------- */
+  var DUUR_B = [], DUUR_X = [0, 5, 10, 15, 20, 30, 45, 60, 75, 90, 105, 120];
+  for (var d = 15; d <= 300; d += 15) DUUR_B.push(d);
+  function itemSamenvatting(b) {
+    var p = R.prijsTekst(b.prijs);
+    return (b.soort === 'extra' ? '+' : '') + R.duurTekst(b.duur) + (p ? ' · ' + (b.soort === 'extra' ? '+' : '') + p : '') + (b.actief ? '' : ' · verborgen');
+  }
+  function renderBehandelingen() {
+    if (!S.draft) S.draft = JSON.parse(JSON.stringify(S.data.behandelingen));
+    var h = '';
+    [['behandeling', 'Behandelingen', 'Wat klanten als eerste kiezen.', '+ Behandeling toevoegen'],
+     ['extra', "Extra's", 'Klanten kunnen deze erbij kiezen. De tijd telt op bij de behandeling.', '+ Extra toevoegen']].forEach(function (g) {
+      h += '<section class="sec"><div class="sec-head"><h2>' + g[1] + '</h2></div><p class="lead">' + g[2] + '</p><div class="items">';
+      S.draft.forEach(function (b, i) {
+        if (b.soort !== g[0]) return;
+        var opts = (g[0] === 'extra' ? DUUR_X : DUUR_B).slice();
+        if (opts.indexOf(+b.duur) < 0) { opts.push(+b.duur); opts.sort(function (a, c) { return a - c; }); }
+        h += '<details class="item' + (b.actief ? '' : ' hidden-item') + '" data-i="' + i + '"' + (S.open[i] ? ' open' : '') + '>' +
+          '<summary><b>' + R.esc(b.naam || 'Zonder naam') + '</b><span class="m" id="sum-' + i + '">' + R.esc(itemSamenvatting(b)) + '</span>' + IC.neer + '</summary>' +
+          '<div class="item-body">' +
+          '<div class="field"><label for="b-naam-' + i + '">Naam</label><input id="b-naam-' + i + '" data-i="' + i + '" data-f="naam" value="' + R.esc(b.naam) + '" maxlength="60"></div>' +
+          '<div class="field"><label for="b-oms-' + i + '">Uitleg voor klanten <span class="hint">optioneel</span></label><textarea id="b-oms-' + i + '" data-i="' + i + '" data-f="omschrijving" maxlength="200">' + R.esc(b.omschrijving) + '</textarea></div>' +
+          '<div class="field-row"><div class="field"><label for="b-duur-' + i + '">' + (g[0] === 'extra' ? 'Extra tijd' : 'Hoe lang') + '</label><select id="b-duur-' + i + '" data-i="' + i + '" data-f="duur">' +
+          opts.map(function (o) { return '<option value="' + o + '"' + (o === +b.duur ? ' selected' : '') + '>' + (g[0] === 'extra' ? '+' : '') + R.duurTekst(o) + '</option>'; }).join('') + '</select></div>' +
+          '<div class="field"><label for="b-prijs-' + i + '">Prijs <span class="hint">optioneel</span></label><div class="price-input"><span>€</span><input id="b-prijs-' + i + '" data-i="' + i + '" data-f="prijs" inputmode="decimal" placeholder="bijv. 35" value="' + R.esc(String(b.prijs || '').replace(/^€\s*/, '')) + '" maxlength="20"></div></div></div>' +
+          '<div class="field"><label for="b-naam-en-' + i + '">Naam in het Engels <span class="hint">leeg = Nederlandse naam</span></label><input id="b-naam-en-' + i + '" data-i="' + i + '" data-f="naam_en" value="' + R.esc(b.naam_en || '') + '" maxlength="60"></div>' +
+          '<div class="field"><label for="b-oms-en-' + i + '">Uitleg in het Engels <span class="hint">optioneel</span></label><textarea id="b-oms-en-' + i + '" data-i="' + i + '" data-f="omschrijving_en" maxlength="200">' + R.esc(b.omschrijving_en || '') + '</textarea></div>' +
+          '<div class="item-foot"><label class="check-row"><input type="checkbox" data-i="' + i + '" data-f="actief"' + (b.actief ? ' checked' : '') + '> Laat zien op de boekingspagina</label>' +
+          '<button class="act danger" type="button" data-verwijder="' + i + '">' + (S.delZeker === i ? 'Zeker weten?' : 'Verwijderen') + '</button></div></div></details>';
+      });
+      h += '</div><button class="add-btn" type="button" data-nieuw="' + g[0] + '" style="justify-self:start">' + g[3] + '</button></section>';
+    });
+    h += '<p class="lead">Prijzen die je leeg laat, zie je niet op de website. Tip: zet bij een prijs alleen het getal, dan rekent de website het totaal uit.</p>';
+    $('#main').innerHTML = h;
+  }
+  function wijzigItem(el) {
+    var i = +el.dataset.i, f = el.dataset.f, b = S.draft[i];
+    if (!b) return;
+    if (f === 'actief') b.actief = el.checked;
+    else if (f === 'duur') b.duur = +el.value;
+    else b[f] = el.value;
+    S.dirty = true;
+    var s = $('#sum-' + i); if (s) s.textContent = itemSamenvatting(b);
+    if (f === 'naam') { var bb = el.closest('details').querySelector('summary b'); bb.textContent = b.naam || 'Zonder naam'; }
+    if (f === 'actief') el.closest('details').classList.toggle('hidden-item', !b.actief);
+    renderSavebar();
+  }
+
+  /* ---------- instellingen ---------- */
+  var OPTIES = {
+    min_uren_vooruit: [[0, 'Direct'], [1, '1 uur'], [2, '2 uur'], [3, '3 uur'], [6, '6 uur'], [12, '12 uur'], [24, '1 dag'], [48, '2 dagen']],
+    max_dagen_vooruit: [[7, '1 week'], [14, '2 weken'], [21, '3 weken'], [28, '4 weken'], [42, '6 weken'], [56, '8 weken'], [90, '3 maanden']],
+    pauze: [[0, 'Geen pauze'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [20, '20 min'], [30, '30 min'], [45, '45 min'], [60, '1 uur']],
+    stap: [[15, 'Elk kwartier'], [30, 'Elk half uur'], [60, 'Elk uur']],
+    annuleren_uren: [[0, 'Tot het begin'], [2, '2 uur'], [12, '12 uur'], [24, '24 uur'], [48, '48 uur'], [72, '3 dagen']]
+  };
+  function keuze(k, label, hint) {
+    var v = +S.inst[k], o = OPTIES[k].slice();
+    if (!o.some(function (x) { return x[0] === v; })) o.push([v, v + (k === 'pauze' || k === 'stap' ? ' min' : k === 'max_dagen_vooruit' ? ' dagen' : ' uur')]);
+    return '<div class="field"><label for="s-' + k + '">' + label + (hint ? ' <span class="hint">' + hint + '</span>' : '') + '</label><select id="s-' + k + '" data-s="' + k + '">' +
+      o.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === v ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></div>';
+  }
+  function veld(k, label, hint, extra) {
+    return '<div class="field"><label for="s-' + k + '">' + label + (hint ? ' <span class="hint">' + hint + '</span>' : '') + '</label><input id="s-' + k + '" data-s="' + k + '" value="' + R.esc(S.inst[k]) + '"' + (extra || '') + '></div>';
+  }
+  function renderInstellingen() {
+    if (!S.inst) S.inst = Object.assign({}, S.data.instellingen);
+    var link = boekLink();
+    var h = '<div class="card"><h3>Jouw boekingslink</h3>' + (link
+      ? '<div class="linkcard"><span class="url" id="link-url">' + R.esc(link) + '</span><button class="btn btn-sm" type="button" id="kopieer-link">Kopieer</button></div><p class="lead">Zet deze link in je Instagram-bio en in je WhatsApp-status.</p>'
+      : '<p class="lead">Zodra de website online staat, zie je hier de link die je in je Instagram-bio zet.</p>') + '</div>';
+    h += '<div class="card"><h3>Contact</h3>' + veld('naam', 'Naam van je salon', '', ' maxlength="60"') + veld('plaats', 'Plaats', '', ' maxlength="60"') +
+      veld('instagram', 'Instagram', 'zonder @', ' maxlength="60" autocapitalize="off"') +
+      veld('whatsapp', 'WhatsApp-nummer', 'klanten kunnen je appen', ' type="tel" inputmode="tel" placeholder="06 12345678" maxlength="20"') +
+      veld('email', 'E-mail voor meldingen', 'leeg = je Google-mail', ' type="email" inputmode="email" autocapitalize="off" maxlength="120"') +
+      '<div class="field"><label for="s-adres">Adres <span class="hint">alleen in de bevestigingsmail</span></label><textarea id="s-adres" data-s="adres" maxlength="400" placeholder="Straat en huisnummer, postcode">' + R.esc(S.inst.adres) + '</textarea></div></div>';
+    h += '<div class="card"><h3>Boekingspagina</h3>' + veld('ondertitel', 'Tekst onder de naam', 'bijv. BIAB & gel nails', ' maxlength="80"') + '<div class="field"><label for="s-goed_om_te_weten">Goed om te weten <span class="hint">staat op de site en in de mail</span></label>' +
+      '<textarea id="s-goed_om_te_weten" data-s="goed_om_te_weten" maxlength="400" placeholder="Bijvoorbeeld: kom met schone nagels zonder lak.">' + R.esc(S.inst.goed_om_te_weten) + '</textarea></div>' +
+      '<p class="lead">Klanten kunnen de pagina ook in het Engels bekijken. Vul hieronder de Engelse teksten in. Laat je iets leeg, dan zien ze de Nederlandse tekst.</p>' +
+      veld('ondertitel_en', 'Tekst onder de naam in het Engels', '', ' maxlength="80"') +
+      '<div class="field"><label for="s-goed_om_te_weten_en">Goed om te weten in het Engels</label><textarea id="s-goed_om_te_weten_en" data-s="goed_om_te_weten_en" maxlength="400" placeholder="For example: please come with clean nails without polish.">' + R.esc(S.inst.goed_om_te_weten_en || '') + '</textarea></div></div>';
+    h += '<div class="card"><h3>Regels voor boeken</h3>' + keuze('min_uren_vooruit', 'Klanten boeken minimaal', 'van tevoren') + keuze('max_dagen_vooruit', 'Klanten kunnen boeken tot', 'vooruit') +
+      keuze('pauze', 'Pauze tussen afspraken') + keuze('stap', 'Starttijden') + keuze('annuleren_uren', 'Klanten kunnen zelf annuleren tot', 'van tevoren') +
+      '<label class="check-row"><input type="checkbox" data-s="agenda_blokkeren"' + (/^ja$/i.test(S.inst.agenda_blokkeren) ? ' checked' : '') + '> Staat er al iets in mijn agenda? Dan is die tijd niet te boeken.</label></div>';
+    h += '<div class="card"><h3>Wachtwoord</h3><div class="field-row"><div class="field"><label for="ww-oud">Huidig wachtwoord</label><input id="ww-oud" type="password" autocomplete="current-password"></div>' +
+      '<div class="field"><label for="ww-nieuw">Nieuw wachtwoord</label><input id="ww-nieuw" type="password" autocomplete="new-password" minlength="6"></div></div>' +
+      '<button class="btn btn-light" type="button" id="ww-knop" style="justify-self:start">Wachtwoord wijzigen</button></div>';
+    h += '<div class="card"><h3>Overig</h3>' + (S.data.sheet ? '<a class="btn btn-light" href="' + R.esc(S.data.sheet) + '" target="_blank" rel="noopener">Open je spreadsheet</a>' : '') +
+      '<p class="lead">Tip: zet deze pagina op je beginscherm. Tik in Safari op het deel-icoon en kies "Zet op beginscherm".</p>' +
+      '<button class="btn btn-light" type="button" id="uitloggen">Uitloggen</button></div>';
+    $('#main').innerHTML = '<div class="sec">' + h + '</div>';
+  }
+  function wijzigInst(el) {
+    var k = el.dataset.s;
+    S.inst[k] = el.type === 'checkbox' ? (el.checked ? 'ja' : 'nee') : el.value;
+    S.instDirty = true; renderSavebar();
+  }
+
+  /* ---------- opslaan-balk ---------- */
+  function renderSavebar() {
+    $('#savebar').hidden = !((S.tab === 'behandelingen' && S.dirty) || (S.tab === 'instellingen' && S.instDirty));
+  }
+  $('#opslaan').addEventListener('click', function () {
+    var knop = this;
+    if (S.bezig) return;
+    S.bezig = true; knop.textContent = 'Bezig…';
+    var p;
+    if (S.tab === 'behandelingen') {
+      p = api('behandelingen', { lijst: S.draft }).then(function (r) {
+        S.data.behandelingen = r.behandelingen; S.draft = null; S.dirty = false; S.delZeker = null; renderBehandelingen(); toast('Opgeslagen');
+      });
+    } else {
+      p = api('instellingen', { instellingen: S.inst }).then(function (r) {
+        S.data.instellingen = r.instellingen; S.inst = null; S.instDirty = false; renderInstellingen(); toast('Opgeslagen');
+      });
+    }
+    p.catch(fout).then(function () { S.bezig = false; knop.textContent = 'Opslaan'; renderSavebar(); });
+  });
+  $('#ongedaan').addEventListener('click', function () {
+    if (S.tab === 'behandelingen') { S.draft = null; S.dirty = false; S.delZeker = null; renderBehandelingen(); }
+    else { S.inst = null; S.instDirty = false; renderInstellingen(); }
+    renderSavebar();
+  });
+
+  /* ---------- klikken en typen ---------- */
+  $('#main').addEventListener('click', function (e) {
+    var t = e.target.closest('button, input[type="checkbox"]');
+    if (!t) return;
+    var ds = t.dataset;
+    if (t.id === 'kopieer-link') return kopieer(boekLink(), $('#link-url'));
+    if (t.id === 'toon-oud') { S.oud = t.checked; return renderAfspraken(); }
+    if (ds.annuleer) { S.cancelOpen = ds.annuleer; renderAfspraken(); var ta = $('#ann-bericht'); if (ta) ta.focus(); return; }
+    if (ds.terug) { S.cancelOpen = null; return renderAfspraken(); }
+    if (ds.bevestig) {
+      t.disabled = true; t.textContent = 'Bezig…';
+      return api('annuleer', { id: ds.bevestig, bericht: $('#ann-bericht').value, mail: $('#ann-mail').checked }).then(function () {
+        S.data.afspraken.forEach(function (a) { if (a.id === ds.bevestig) a.status = 'geannuleerd (salon)'; });
+        S.cancelOpen = null; renderAfspraken(); toast('Afspraak geannuleerd');
+      }).catch(function (err) { fout(err); t.disabled = false; t.textContent = 'Ja, annuleer'; });
+    }
+    if (t.id === 'wk-vorige') { S.week--; S.addOpen = null; S.kopieerZeker = false; return renderWerktijden(); }
+    if (t.id === 'wk-volgende') { S.week++; S.addOpen = null; S.kopieerZeker = false; return renderWerktijden(); }
+    if (ds.open) { S.addOpen = ds.open; return renderWerktijden(); }
+    if (ds.sluit) { S.addOpen = null; return renderWerktijden(); }
+    if (ds.preset) { var p = ds.preset.split('-'); return voegBlokToe(S.addOpen, p[0], p[1]); }
+    if (ds.toevoegen) return voegBlokToe(ds.toevoegen, $('#add-van').value, $('#add-tot').value);
+    if (ds.weg) {
+      var w = ds.weg.split('|'), k = w[0], bl = (S.data.werktijden[k] || []).slice();
+      bl.splice(+w[1], 1); zetBlokken(k, bl); renderWerktijden(); bewaarDagen([k]);
+      if (S.data.afspraken.some(function (a) { return a.datum === k && a.status === 'bevestigd'; })) toast('Weggehaald. De afspraken op deze dag blijven gewoon staan.');
+      return;
+    }
+    if (t.id === 'kopieer-week') {
+      var ma = R.plusDagen(R.maandag(S.data.nu.datum), S.week * 7), keys = [], heeftAl = false;
+      for (var i = 0; i < 7; i++) {
+        var dk = R.plusDagen(ma, i);
+        if (dk < S.data.nu.datum) continue;
+        keys.push(dk);
+        if ((S.data.werktijden[dk] || []).length) heeftAl = true;
+      }
+      if (!keys.length) return;
+      if (heeftAl && !S.kopieerZeker) { S.kopieerZeker = true; return renderWerktijden(); }
+      keys.forEach(function (dk) { zetBlokken(dk, (S.data.werktijden[R.plusDagen(dk, -7)] || []).slice()); });
+      S.kopieerZeker = false; renderWerktijden(); return bewaarDagen(keys);
+    }
+    if (ds.nieuw) {
+      S.draft.push({ id: '', soort: ds.nieuw, naam: ds.nieuw === 'extra' ? 'Nieuwe extra' : 'Nieuwe behandeling', omschrijving: '', naam_en: '', omschrijving_en: '', duur: ds.nieuw === 'extra' ? 15 : 60, prijs: '', actief: true });
+      S.open = {}; S.open[S.draft.length - 1] = true; S.dirty = true; S.delZeker = null; renderBehandelingen(); renderSavebar();
+      var inp = $('#b-naam-' + (S.draft.length - 1)); if (inp) { inp.focus(); inp.select(); }
+      return;
+    }
+    if (ds.verwijder !== undefined) {
+      var idx = +ds.verwijder;
+      if (S.delZeker !== idx) { S.delZeker = idx; return renderBehandelingen(); }
+      S.draft.splice(idx, 1); S.delZeker = null; S.open = {}; S.dirty = true; renderBehandelingen(); return renderSavebar();
+    }
+    if (t.id === 'ww-knop') {
+      var oud = $('#ww-oud').value, nieuw = $('#ww-nieuw').value;
+      if (nieuw.length < 6) return toast('Kies een nieuw wachtwoord van minimaal 6 tekens.', true);
+      t.disabled = true;
+      return api('wachtwoord', { oud: oud, nieuw: nieuw }).then(function () { $('#ww-oud').value = ''; $('#ww-nieuw').value = ''; toast('Wachtwoord gewijzigd'); })
+        .catch(fout).then(function () { t.disabled = false; });
+    }
+    if (t.id === 'uitloggen') { api('uitloggen').catch(function () {}); uitloggenLokaal(); }
+  });
+  $('#main').addEventListener('input', function (e) {
+    if (e.target.dataset.f) wijzigItem(e.target);
+    else if (e.target.dataset.s) wijzigInst(e.target);
+  });
+  $('#main').addEventListener('change', function (e) {
+    if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT') {
+      if (e.target.dataset.f) wijzigItem(e.target);
+      else if (e.target.dataset.s) wijzigInst(e.target);
+    }
+  });
+  $('#main').addEventListener('toggle', function (e) {
+    if (e.target.matches && e.target.matches('details.item')) S.open[e.target.dataset.i] = e.target.open;
+  }, true);
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && S.data && Date.now() - S.laatst > 60000 && !S.dirty && !S.instDirty) laad();
+  });
+
+  if (S.token) {
+    $('#app').hidden = false;
+    $('#main').innerHTML = '<div class="skeleton" style="height:76px"></div><div class="skeleton" style="height:120px"></div><div class="skeleton" style="height:120px"></div>';
+    laad();
+  } else toonLogin();
+})();
+</script>
+</body>
+</html>
